@@ -1,124 +1,112 @@
-from utils import get_temperature_data_in_range
-from stats import calculate_stats
-from plotter import create_plot_widget, update_plot
+import sys
+from datetime import datetime, timedelta, timezone
+import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore
-import sys
-import numpy as np
-from datetime import datetime, timedelta
 
-class TemperatureApp(QtWidgets.QWidget):
-    def __init__(self):
-        super().__init__()
-        self.init_ui()
+from utils import get_temperature_data_in_range
 
-    def init_ui(self):
-        self.setWindowTitle("Temperature Data Viewer")
-        self.setGeometry(100, 100, 1200, 800)
+# -------- Configuration -------- #
+WINDOW_PAST_SEC = 600          # show 10 min of history
+UPDATE_INTERVAL_MS = 5000      # refresh every 5s
+FUTURE_POINTS = 15             # number of forecast points
+FORECAST_VALUES = {            # target temperature per device
+    "device01": 28.7,
+    "device02": 28.4
+}
 
-        # Main layout
-        main_layout = QtWidgets.QHBoxLayout()
+# -------- PyQtGraph setup -------- #
+pg.setConfigOptions(antialias=True)
 
-        # Left panel for controls
-        control_panel = QtWidgets.QVBoxLayout()
+app = QtWidgets.QApplication(sys.argv)
+win = pg.GraphicsLayoutWidget(show=True, title="Temperature Live Graph")
 
-        # Device selection
-        device_layout = QtWidgets.QHBoxLayout()
-        device_layout.addWidget(QtWidgets.QLabel("Device:"))
-        self.device_combo = QtWidgets.QComboBox()
-        self.device_combo.addItems(['device01', 'device02', 'device03', 'device04'])
-        device_layout.addWidget(self.device_combo)
-        control_panel.addLayout(device_layout)
+axis = pg.graphicsItems.DateAxisItem.DateAxisItem(orientation='bottom')
+plot = win.addPlot(title="Device Temperatures", axisItems={'bottom': axis})
+plot.setLabel('left', 'Temperature (°C)')
+plot.setLabel('bottom', 'Time (UTC)')
+plot.addLegend()
 
-        # Start time
-        start_layout = QtWidgets.QHBoxLayout()
-        start_layout.addWidget(QtWidgets.QLabel("Start:"))
-        self.start_edit = QtWidgets.QDateTimeEdit()
-        self.start_edit.setDateTime(QtCore.QDateTime.currentDateTime().addSecs(-3600))  # 1 hour ago
-        start_layout.addWidget(self.start_edit)
-        control_panel.addLayout(start_layout)
+# Real data curves
+curve1 = plot.plot(pen='r', name='device01')
+curve2 = plot.plot(pen='y', name='device02')
 
-        # End time removed, always to now
+# Forecast curves (same color for both)
+forecast_curve1 = plot.plot(pen=pg.mkPen('m', width=2, style=QtCore.Qt.PenStyle.DashLine), name='device01 forecast')
+forecast_curve2 = plot.plot(pen=pg.mkPen('m', width=2, style=QtCore.Qt.PenStyle.DashLine), name='device02 forecast')
 
-        # Query button
-        self.query_button = QtWidgets.QPushButton("Query Data")
-        self.query_button.clicked.connect(self.query_data)
-        control_panel.addWidget(self.query_button)
 
-        # Stats display
-        stats_group = QtWidgets.QGroupBox("Statistics")
-        stats_layout = QtWidgets.QVBoxLayout()
-        self.stats_labels = {}
-        for stat in ['mean', 'min', 'max', 'std', 'count']:
-            label = QtWidgets.QLabel(f"{stat.capitalize()}: --")
-            self.stats_labels[stat] = label
-            stats_layout.addWidget(label)
-        stats_group.setLayout(stats_layout)
-        control_panel.addWidget(stats_group)
+# -------- Update function -------- #
+def update():
+    # Compute query window
+    now_utc = datetime.now(timezone.utc)
+    start_utc = now_utc - timedelta(seconds=WINDOW_PAST_SEC)
+    start_str = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_str = ""  # until now
 
-        # Hover info label
-        self.hover_label = QtWidgets.QLabel("Hover over the graph for data point info")
-        control_panel.addWidget(self.hover_label)
+    # Get data
+    times1, temps1 = get_temperature_data_in_range("device01", start_str, end_str)
+    times2, temps2 = get_temperature_data_in_range("device02", start_str, end_str)
 
-        control_panel.addStretch()
+    times1 = np.array(times1 or [], dtype=float)
+    times2 = np.array(times2 or [], dtype=float)
 
-        # Right panel for plot
-        self.win, self.plot, self.curve = create_plot_widget()
-        self.win.setFixedWidth(800)
+    if not len(times1) and not len(times2):
+        print("No data in range yet...")
+        return
 
-        # Connect mouse moved signal for hover info
-        self.proxy = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=60, slot=self.mouse_moved)
+    # --- Real data plotting ---
+    if len(times1) and len(temps1):
+        curve1.setData(times1, temps1)
+    else:
+        curve1.clear()
 
-        # Add panels to main layout
-        main_layout.addLayout(control_panel)
-        main_layout.addWidget(self.win)
+    if len(times2) and len(temps2):
+        curve2.setData(times2, temps2)
+    else:
+        curve2.clear()
 
-        self.setLayout(main_layout)
+    # Determine latest timestamps for each
+    t_max1 = times1[-1] if len(times1) else None
+    t_max2 = times2[-1] if len(times2) else None
 
-    def query_data(self):
-        device = self.device_combo.currentText()
-        start_dt = self.start_edit.dateTime()
-        
-        # Convert local time to UTC by subtracting 1 hour
-        start_dt_utc = start_dt.addSecs(-3600)
-        start_str = start_dt_utc.toString("yyyy-MM-ddTHH:mm:ssZ")
-        
-        try:
-            times, temperatures = get_temperature_data_in_range(device, start_str, "")  # end ignored
-            self.current_times = times
-            self.current_temps = temperatures
-            update_plot(self.curve, times, temperatures)
-            self.plot.autoRange()  # Auto-scale to show all data
-            stats = calculate_stats(temperatures)
-            self.update_stats(stats)
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to fetch data: {str(e)}")
+    # Determine common dt (sampling interval)
+    combined_times = np.concatenate([times1, times2]) if len(times1) and len(times2) else (times1 if len(times1) else times2)
+    if len(combined_times) > 1:
+        sorted_t = np.sort(combined_times)
+        diffs = np.diff(sorted_t)
+        dt = np.median(diffs[diffs > 0]) if np.any(diffs > 0) else 10.0
+    else:
+        dt = 10.0
 
-    def update_stats(self, stats):
-        for stat, value in stats.items():
-            if isinstance(value, float):
-                self.stats_labels[stat].setText(f"{stat.capitalize()}: {value:.2f}")
-            else:
-                self.stats_labels[stat].setText(f"{stat.capitalize()}: {value}")
+    # --- Forecast for device01 ---
+    if t_max1 is not None:
+        forecast_times1 = t_max1 + dt * np.arange(1, FUTURE_POINTS + 1, dtype=float)
+        forecast_vals1 = np.full_like(forecast_times1, FORECAST_VALUES["device01"], dtype=float)
+        forecast_curve1.setData(forecast_times1, forecast_vals1)
+    else:
+        forecast_curve1.clear()
 
-    def mouse_moved(self, evt):
-        pos = evt[0]
-        if self.plot.sceneBoundingRect().contains(pos):
-            mouse_point = self.plot.vb.mapSceneToView(pos)
-            x = mouse_point.x()
-            if hasattr(self, 'current_times') and self.current_times:
-                times_arr = np.array(self.current_times)
-                idx = np.argmin(np.abs(times_arr - x))
-                timestamp = self.current_times[idx]
-                temp = self.current_temps[idx]
-                count = idx + 1
-                dt = datetime.fromtimestamp(timestamp) + timedelta(hours=1)
-                self.hover_label.setText(f"Count: {count}, Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}, Temp: {temp:.2f}°C")
-        else:
-            self.hover_label.setText("Hover over the graph for data point info")
+    # --- Forecast for device02 ---
+    if t_max2 is not None:
+        forecast_times2 = t_max2 + dt * np.arange(1, FUTURE_POINTS + 1, dtype=float)
+        forecast_vals2 = np.full_like(forecast_times2, FORECAST_VALUES["device02"], dtype=float)
+        forecast_curve2.setData(forecast_times2, forecast_vals2)
+    else:
+        forecast_curve2.clear()
 
-if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    window = TemperatureApp()
-    window.show()
-    sys.exit(app.exec())
+    # --- X range ---
+    latest_real = max([t for t in [t_max1, t_max2] if t is not None])
+    rightmost = latest_real + FUTURE_POINTS * dt
+    plot.setXRange(latest_real - WINDOW_PAST_SEC, rightmost)
+
+
+# -------- Timer -------- #
+timer = QtCore.QTimer()
+timer.timeout.connect(update)
+timer.start(UPDATE_INTERVAL_MS)
+
+# Initial draw
+update()
+
+sys.exit(app.exec())
