@@ -11,8 +11,8 @@ from utils import get_temperature_data_in_range
 # -------- Configuration -------- #
 WINDOW_PAST_SEC = 600          # show 10 min of history to the left of latest
 UPDATE_INTERVAL_MS = 5000      # refresh every 5s
-FUTURE_POINTS = 15             # number of forecast points
-FORECAST_WINDOW = 64           # how many last measurements to average per device
+FUTURE_POINTS = 15             # number of forecast points per device
+FORECAST_WINDOW = 64           # how many last measurements to use for trend
 
 
 # -------- Custom Axis: DateAxis + "NOW" label -------- #
@@ -64,18 +64,55 @@ forecast_curve2 = plot.plot(
 )
 
 
-# -------- Helper: compute constant forecast from last N measurements -------- #
-def compute_forecast_value(temps: list[float], window: int) -> float | None:
-    """Return mean of last `window` measurements (or None if not enough data)."""
-    if not temps:
-        return None
-    # take up to last `window` values
-    window_vals = temps[-window:] if len(temps) > window else temps
-    # guard in case of weird non-numeric entries
-    arr = np.array(window_vals, dtype=float)
-    if arr.size == 0:
-        return None
-    return float(arr.mean())
+# -------- Helper: compute forecast line using linear trend -------- #
+def compute_forecast_line(times: np.ndarray,
+                          temps: list[float],
+                          window: int,
+                          n_future: int,
+                          dt: float):
+    """
+    Fit a linear trend to the last `window` points and extrapolate
+    `n_future` points ahead by step `dt`.
+
+    Returns (future_times, future_values) or (None, None) if not enough data.
+    """
+    if times.size < 2 or not temps:
+        return None, None
+
+    # Take last `window` samples
+    temps_arr = np.array(temps, dtype=float)
+    if temps_arr.size > window:
+        temps_arr = temps_arr[-window:]
+        times_window = times[-window:]
+    else:
+        times_window = times
+
+    # Shift time so last point is at x = 0
+    t_last = times_window[-1]
+    x = times_window - t_last         # <= 0
+    y = temps_arr
+
+    # Need at least 2 distinct x values for a slope
+    if np.allclose(x, x[0]):
+        return None, None
+
+    # Linear regression: y ≈ a*x + b
+    a, b = np.polyfit(x, y, 1)
+
+    # Adjust intercept so line passes exactly through last real point (x=0)
+    y_last = y[-1]
+    # at x=0, current line predicts b; we want y_last instead
+    delta = y_last - b
+    b_adj = b + delta
+
+    # Future x values: dt, 2*dt, ..., n_future*dt
+    future_x = dt * np.arange(1, n_future + 1, dtype=float)
+    future_y = a * future_x + b_adj
+
+    # Convert back to absolute timestamps (undo the shift)
+    future_times = t_last + future_x
+
+    return future_times, future_y
 
 
 # -------- Update function -------- #
@@ -142,32 +179,39 @@ def update():
     else:
         dt = 10.0
 
-    # ---- Forecast values based on last measurements ----
-    forecast_val1 = compute_forecast_value(temps1, FORECAST_WINDOW) if temps1 else None
-    forecast_val2 = compute_forecast_value(temps2, FORECAST_WINDOW) if temps2 else None
-
-    # device01 forecast
-    if t_max1 is not None and forecast_val1 is not None:
-        future_times1 = t_max1 + dt * np.arange(1, FUTURE_POINTS + 1, dtype=float)
-        future_vals1 = np.full_like(future_times1, forecast_val1, dtype=float)
-        forecast_curve1.setData(future_times1, future_vals1)
+    # ---- Forecast for each device using trend ----
+    # device01
+    if len(times1) and temps1:
+        f_times1, f_vals1 = compute_forecast_line(times1, temps1,
+                                                  FORECAST_WINDOW,
+                                                  FUTURE_POINTS,
+                                                  dt)
+        if f_times1 is not None:
+            forecast_curve1.setData(f_times1, f_vals1)
+        else:
+            forecast_curve1.clear()
     else:
         forecast_curve1.clear()
 
-    # device02 forecast
-    if t_max2 is not None and forecast_val2 is not None:
-        future_times2 = t_max2 + dt * np.arange(1, FUTURE_POINTS + 1, dtype=float)
-        future_vals2 = np.full_like(future_times2, forecast_val2, dtype=float)
-        forecast_curve2.setData(future_times2, future_vals2)
+    # device02
+    if len(times2) and temps2:
+        f_times2, f_vals2 = compute_forecast_line(times2, temps2,
+                                                  FORECAST_WINDOW,
+                                                  FUTURE_POINTS,
+                                                  dt)
+        if f_times2 is not None:
+            forecast_curve2.setData(f_times2, f_vals2)
+        else:
+            forecast_curve2.clear()
     else:
         forecast_curve2.clear()
 
     # ---- X-range: from past window up to end of forecast ----
     rightmost_future = []
-    if t_max1 is not None:
-        rightmost_future.append(t_max1 + FUTURE_POINTS * dt)
-    if t_max2 is not None:
-        rightmost_future.append(t_max2 + FUTURE_POINTS * dt)
+    if t_max1 is not None and forecast_curve1.getData()[0] is not None:
+        rightmost_future.append(forecast_curve1.getData()[0][-1])
+    if t_max2 is not None and forecast_curve2.getData()[0] is not None:
+        rightmost_future.append(forecast_curve2.getData()[0][-1])
 
     rightmost = max(rightmost_future) if rightmost_future else t_latest
     left_bound = t_latest - WINDOW_PAST_SEC
