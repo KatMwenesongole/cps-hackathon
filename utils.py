@@ -86,7 +86,7 @@ def get_latest_temperature_data(device: Literal['device01', 'device02', 'device0
 
     return latest_value
 
-def get_temperature_data_in_range(device: Literal['device01', 'device02', 'device03', 'device04'], start: str, end: str) -> list[float]:
+def get_temperature_data_in_range(device: Literal['device01', 'device02', 'device03', 'device04'], start: str, end: str) -> tuple[list[float], list[float]]:
     token = os.environ.get("INFLUXDB_TOKEN") or PREDICTIVE_MAIN_INFLUXDB_TOKEN
     org = "cnidome"
     url = "https://influx.cps-predictive-maintenance.skylyze.com"
@@ -96,7 +96,7 @@ def get_temperature_data_in_range(device: Literal['device01', 'device02', 'devic
 
     query_str = f"""
     from(bucket: "home")
-    |> range(start: {start}, stop: {end})
+    |> range(start: {start}, stop: now())
     |> filter(fn: (r) => r["_measurement"] == "temperature")
     |> filter(fn: (r) => r["_field"] == "temperature")
     |> filter(fn: (r) => r["device"] == "{device}")
@@ -106,5 +106,11 @@ def get_temperature_data_in_range(device: Literal['device01', 'device02', 'devic
 
     df = query_api.query_data_frame(query_str)
 
-    # Extract the temperature values as a list of floats
-    return df['_value'].dropna().tolist()
+    # Drop any rows with NaN values to ensure times and temperatures align
+    df = df.dropna()
+
+    # Extract times and temperatures
+    times = df['_time'].astype('int64') // 10**9  # Convert to seconds since epoch
+    temperatures = df['_value'].tolist()
+    
+    return times.tolist(), temperatures

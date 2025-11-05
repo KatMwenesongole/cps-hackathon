@@ -1,56 +1,124 @@
-from utils import get_latest_temperature_data, get_temperature_data_in_range
+from utils import get_temperature_data_in_range
+from stats import calculate_stats
+from plotter import create_plot_widget, update_plot
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore
-import numpy as np
 import sys
-from collections import deque
-import datetime
+import numpy as np
+from datetime import datetime, timedelta
 
-# Initialize data structures for live plotting
-max_points = 100  # Keep last 100 points
-times = deque(maxlen=max_points)
-temperatures = deque(maxlen=max_points)
+class TemperatureApp(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
 
-app = QtWidgets.QApplication(sys.argv)
-win = pg.GraphicsLayoutWidget(show=True, title="Temperature Live Graph")
+    def init_ui(self):
+        self.setWindowTitle("Temperature Data Viewer")
+        self.setGeometry(100, 100, 1200, 800)
 
-plot = win.addPlot(title="Temperature (°C)")
-plot.setLabel('left', 'Temperature', units='°C')
-plot.setLabel('bottom', 'Time', units='s')
-curve = plot.plot(pen='y')
+        # Main layout
+        main_layout = QtWidgets.QHBoxLayout()
 
-def fetch_data():
-    global times, temperatures
-    try:
-        latest_temp = get_latest_temperature_data('device02')
-        if latest_temp is not None:
-            current_time = datetime.datetime.now().timestamp()
-            times.append(current_time)
-            temperatures.append(latest_temp)
-    except Exception as e:
-        print(f"Error fetching data: {e}")
+        # Left panel for controls
+        control_panel = QtWidgets.QVBoxLayout()
 
-def update_plot():
-    if times and temperatures:
-        # Convert to numpy arrays for plotting
-        time_array = np.array(list(times))
-        temp_array = np.array(list(temperatures))
-        # Make times relative to the first point for better visualization
-        if len(time_array) > 1:
-            time_array -= time_array[0]
-        curve.setData(time_array, temp_array)
+        # Device selection
+        device_layout = QtWidgets.QHBoxLayout()
+        device_layout.addWidget(QtWidgets.QLabel("Device:"))
+        self.device_combo = QtWidgets.QComboBox()
+        self.device_combo.addItems(['device01', 'device02', 'device03', 'device04'])
+        device_layout.addWidget(self.device_combo)
+        control_panel.addLayout(device_layout)
 
-# Timer for fetching data every 5 seconds
-data_timer = QtCore.QTimer()
-data_timer.timeout.connect(fetch_data)
-data_timer.start(5000)  # 5000 ms = 5 seconds
+        # Start time
+        start_layout = QtWidgets.QHBoxLayout()
+        start_layout.addWidget(QtWidgets.QLabel("Start:"))
+        self.start_edit = QtWidgets.QDateTimeEdit()
+        self.start_edit.setDateTime(QtCore.QDateTime.currentDateTime().addSecs(-3600))  # 1 hour ago
+        start_layout.addWidget(self.start_edit)
+        control_panel.addLayout(start_layout)
 
-# Timer for updating plot every 50 ms
-plot_timer = QtCore.QTimer()
-plot_timer.timeout.connect(update_plot)
-plot_timer.start(50)
+        # End time removed, always to now
 
-# Fetch initial data
-fetch_data()
+        # Query button
+        self.query_button = QtWidgets.QPushButton("Query Data")
+        self.query_button.clicked.connect(self.query_data)
+        control_panel.addWidget(self.query_button)
 
-sys.exit(app.exec())
+        # Stats display
+        stats_group = QtWidgets.QGroupBox("Statistics")
+        stats_layout = QtWidgets.QVBoxLayout()
+        self.stats_labels = {}
+        for stat in ['mean', 'min', 'max', 'std', 'count']:
+            label = QtWidgets.QLabel(f"{stat.capitalize()}: --")
+            self.stats_labels[stat] = label
+            stats_layout.addWidget(label)
+        stats_group.setLayout(stats_layout)
+        control_panel.addWidget(stats_group)
+
+        # Hover info label
+        self.hover_label = QtWidgets.QLabel("Hover over the graph for data point info")
+        control_panel.addWidget(self.hover_label)
+
+        control_panel.addStretch()
+
+        # Right panel for plot
+        self.win, self.plot, self.curve = create_plot_widget()
+        self.win.setFixedWidth(800)
+
+        # Connect mouse moved signal for hover info
+        self.proxy = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=60, slot=self.mouse_moved)
+
+        # Add panels to main layout
+        main_layout.addLayout(control_panel)
+        main_layout.addWidget(self.win)
+
+        self.setLayout(main_layout)
+
+    def query_data(self):
+        device = self.device_combo.currentText()
+        start_dt = self.start_edit.dateTime()
+        
+        # Convert local time to UTC by subtracting 1 hour
+        start_dt_utc = start_dt.addSecs(-3600)
+        start_str = start_dt_utc.toString("yyyy-MM-ddTHH:mm:ssZ")
+        
+        try:
+            times, temperatures = get_temperature_data_in_range(device, start_str, "")  # end ignored
+            self.current_times = times
+            self.current_temps = temperatures
+            update_plot(self.curve, times, temperatures)
+            self.plot.autoRange()  # Auto-scale to show all data
+            stats = calculate_stats(temperatures)
+            self.update_stats(stats)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to fetch data: {str(e)}")
+
+    def update_stats(self, stats):
+        for stat, value in stats.items():
+            if isinstance(value, float):
+                self.stats_labels[stat].setText(f"{stat.capitalize()}: {value:.2f}")
+            else:
+                self.stats_labels[stat].setText(f"{stat.capitalize()}: {value}")
+
+    def mouse_moved(self, evt):
+        pos = evt[0]
+        if self.plot.sceneBoundingRect().contains(pos):
+            mouse_point = self.plot.vb.mapSceneToView(pos)
+            x = mouse_point.x()
+            if hasattr(self, 'current_times') and self.current_times:
+                times_arr = np.array(self.current_times)
+                idx = np.argmin(np.abs(times_arr - x))
+                timestamp = self.current_times[idx]
+                temp = self.current_temps[idx]
+                count = idx + 1
+                dt = datetime.fromtimestamp(timestamp) + timedelta(hours=1)
+                self.hover_label.setText(f"Count: {count}, Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}, Temp: {temp:.2f}°C")
+        else:
+            self.hover_label.setText("Hover over the graph for data point info")
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    window = TemperatureApp()
+    window.show()
+    sys.exit(app.exec())
