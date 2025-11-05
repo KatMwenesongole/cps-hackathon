@@ -86,7 +86,7 @@ def get_latest_temperature_data(device: Literal['device01', 'device02', 'device0
 
     return latest_value
 
-def get_temperature_data_in_range(device: Literal['device01', 'device02', 'device03', 'device04'], start: str, end: str) -> pd.DataFrame:
+def get_temperature_data_in_range(device: Literal['device01', 'device02', 'device03', 'device04'], start: str, end: str) -> list[float]:
     token = os.environ.get("INFLUXDB_TOKEN") or PREDICTIVE_MAIN_INFLUXDB_TOKEN
     org = "cnidome"
     url = "https://influx.cps-predictive-maintenance.skylyze.com"
@@ -106,4 +106,5 @@ def get_temperature_data_in_range(device: Literal['device01', 'device02', 'devic
 
     df = query_api.query_data_frame(query_str)
 
-    return df
+    # Extract the temperature values as a list of floats
+    return df['_value'].dropna().tolist()
