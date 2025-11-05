@@ -1,5 +1,5 @@
 from utils import get_temperature_data_in_range
-from stats import calculate_stats
+from stats import calculate_stats, calculate_trend_slope
 from plotter import create_plot_widget, update_plot
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore
@@ -60,10 +60,25 @@ class TemperatureApp(QtWidgets.QWidget):
         self.hover_label = QtWidgets.QLabel("Hover over the graph for data point info")
         control_panel.addWidget(self.hover_label)
 
+        # Trend analysis
+        trend_layout = QtWidgets.QHBoxLayout()
+        trend_layout.addWidget(QtWidgets.QLabel("Last N values:"))
+        self.n_spin = QtWidgets.QSpinBox()
+        self.n_spin.setRange(2, 1000)
+        self.n_spin.setValue(10)
+        trend_layout.addWidget(self.n_spin)
+        self.trend_button = QtWidgets.QPushButton("Compute Trend")
+        self.trend_button.clicked.connect(self.compute_trend)
+        trend_layout.addWidget(self.trend_button)
+        control_panel.addLayout(trend_layout)
+
+        self.trend_label = QtWidgets.QLabel("Trend slope: --")
+        control_panel.addWidget(self.trend_label)
+
         control_panel.addStretch()
 
         # Right panel for plot
-        self.win, self.plot, self.curve = create_plot_widget()
+        self.win, self.plot, self.curve, self.line_curve = create_plot_widget()
         self.win.setFixedWidth(800)
 
         # Connect mouse moved signal for hover info
@@ -75,7 +90,7 @@ class TemperatureApp(QtWidgets.QWidget):
 
         self.setLayout(main_layout)
 
-    def query_data(self):
+    def do_query_and_plot(self):
         device = self.device_combo.currentText()
         start_dt = self.start_edit.dateTime()
         
@@ -87,12 +102,36 @@ class TemperatureApp(QtWidgets.QWidget):
             times, temperatures = get_temperature_data_in_range(device, start_str, "")  # end ignored
             self.current_times = times
             self.current_temps = temperatures
-            update_plot(self.curve, times, temperatures)
-            self.plot.autoRange()  # Auto-scale to show all data
+            update_plot(self.curve, self.line_curve, times, temperatures)
+            # Center view on latest value
+            if times:
+                latest_x = times[-1]
+                latest_y = temperatures[-1]
+                x_width = 3600  # 1 hour width
+                y_height = 10  # temperature range
+                self.plot.setXRange(latest_x - x_width/2, latest_x + x_width/2)
+                self.plot.setYRange(latest_y - y_height/2, latest_y + y_height/2)
+                # Draw trend line from latest to right
+                right_x = latest_x + x_width/2
+                n = self.n_spin.value()
+                slope = calculate_trend_slope(times, temperatures, n)
+                self.current_slope = slope
+                line_temps = [float(latest_y), float(latest_y) + slope * (right_x - latest_x)]
+                self.line_curve.setData([latest_x, right_x], line_temps)
+                self.trend_label.setText(f"Trend slope: {slope:.4f} °C/s")
             stats = calculate_stats(temperatures)
             self.update_stats(stats)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Error", f"Failed to fetch data: {str(e)}")
+
+    def query_data(self):
+        self.do_query_and_plot()
+        # Start live updates
+        if hasattr(self, 'live_timer'):
+            self.live_timer.stop()
+        self.live_timer = QtCore.QTimer()
+        self.live_timer.timeout.connect(self.update_live)
+        self.live_timer.start(10000)  # Update every 10 seconds
 
     def update_stats(self, stats):
         for stat, value in stats.items():
@@ -116,6 +155,26 @@ class TemperatureApp(QtWidgets.QWidget):
                 self.hover_label.setText(f"Count: {count}, Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}, Temp: {temp:.2f}°C")
         else:
             self.hover_label.setText("Hover over the graph for data point info")
+
+    def update_live(self):
+        self.do_query_and_plot()
+
+    def compute_trend(self):
+        if hasattr(self, 'current_times') and self.current_times:
+            n = self.n_spin.value()
+            slope = calculate_trend_slope(self.current_times, self.current_temps, n)
+            self.current_slope = slope
+            self.trend_label.setText(f"Trend slope: {slope:.4f} °C/s")
+            # Update the trend line
+            if self.current_times:
+                latest_x = self.current_times[-1]
+                latest_y = self.current_temps[-1]
+                x_width = 3600
+                right_x = latest_x + x_width/2
+                line_temps = [float(latest_y), float(latest_y) + slope * (right_x - latest_x)]
+                self.line_curve.setData([latest_x, right_x], line_temps)
+        else:
+            self.trend_label.setText("Trend slope: No data")
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
