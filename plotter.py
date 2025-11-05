@@ -9,9 +9,8 @@ def create_plot_widget():
     plot = win.addPlot(title="Temperature (°C)", axisItems={'bottom': DateAxisItem(timezone=tz)})
     plot.setLabel('left', 'Temperature', units='°C')
     plot.setLabel('bottom', 'Time (Local)')
-    curve = plot.plot(pen='y')
-    line_curve = plot.plot(pen=pg.mkPen('r', dash=[4, 2]))  # Dashed line
-    return win, plot, curve, line_curve
+    plot.addLegend()
+    return win, plot
 
 def update_plot(curve, line_curve, times: list[float], temperatures: list[float]):
     if times and temperatures:

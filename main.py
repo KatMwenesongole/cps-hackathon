@@ -22,13 +22,7 @@ class TemperatureApp(QtWidgets.QWidget):
         # Left panel for controls
         control_panel = QtWidgets.QVBoxLayout()
 
-        # Device selection
-        device_layout = QtWidgets.QHBoxLayout()
-        device_layout.addWidget(QtWidgets.QLabel("Device:"))
-        self.device_combo = QtWidgets.QComboBox()
-        self.device_combo.addItems(['device01', 'device02', 'device03', 'device04'])
-        device_layout.addWidget(self.device_combo)
-        control_panel.addLayout(device_layout)
+        # Device selection removed, plotting device01, device02, device03
 
         # Start time
         start_layout = QtWidgets.QHBoxLayout()
@@ -46,7 +40,7 @@ class TemperatureApp(QtWidgets.QWidget):
         control_panel.addWidget(self.query_button)
 
         # Stats display
-        stats_group = QtWidgets.QGroupBox("Statistics")
+        stats_group = QtWidgets.QGroupBox("Statistics (Device 01)")
         stats_layout = QtWidgets.QVBoxLayout()
         self.stats_labels = {}
         for stat in ['mean', 'min', 'max', 'std', 'count']:
@@ -57,12 +51,12 @@ class TemperatureApp(QtWidgets.QWidget):
         control_panel.addWidget(stats_group)
 
         # Hover info label
-        self.hover_label = QtWidgets.QLabel("Hover over the graph for data point info")
+        self.hover_label = QtWidgets.QLabel("Hover over the graph for Device 01 data point info")
         control_panel.addWidget(self.hover_label)
 
         # Trend analysis
         trend_layout = QtWidgets.QHBoxLayout()
-        trend_layout.addWidget(QtWidgets.QLabel("Last N values:"))
+        trend_layout.addWidget(QtWidgets.QLabel("Last N values (Device 01):"))
         self.n_spin = QtWidgets.QSpinBox()
         self.n_spin.setRange(2, 1000)
         self.n_spin.setValue(10)
@@ -72,14 +66,19 @@ class TemperatureApp(QtWidgets.QWidget):
         trend_layout.addWidget(self.trend_button)
         control_panel.addLayout(trend_layout)
 
-        self.trend_label = QtWidgets.QLabel("Trend slope: --")
+        self.trend_label = QtWidgets.QLabel("Trend slope (Device 01): --")
         control_panel.addWidget(self.trend_label)
 
         control_panel.addStretch()
 
         # Right panel for plot
-        self.win, self.plot, self.curve, self.line_curve = create_plot_widget()
+        self.win, self.plot = create_plot_widget()
         self.win.setFixedWidth(800)
+        # Add curves for each device
+        self.curve01 = self.plot.plot(pen='y', name='Device 01')
+        self.curve02 = self.plot.plot(pen='g', name='Device 02')
+        self.curve03 = self.plot.plot(pen='b', name='Device 03')
+        self.line_curve = self.plot.plot(pen=pg.mkPen('r', dash=[4, 2]), name='Trend')
 
         # Connect mouse moved signal for hover info
         self.proxy = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=60, slot=self.mouse_moved)
@@ -91,35 +90,49 @@ class TemperatureApp(QtWidgets.QWidget):
         self.setLayout(main_layout)
 
     def do_query_and_plot(self):
-        device = self.device_combo.currentText()
         start_dt = self.start_edit.dateTime()
         
         # Convert local time to UTC by subtracting 1 hour
         start_dt_utc = start_dt.addSecs(-3600)
         start_str = start_dt_utc.toString("yyyy-MM-ddTHH:mm:ssZ")
         
+        devices = ['device01', 'device02', 'device03']
+        all_times = []
+        all_temps = []
+        
         try:
-            times, temperatures = get_temperature_data_in_range(device, start_str, "")  # end ignored
-            self.current_times = times
-            self.current_temps = temperatures
-            update_plot(self.curve, self.line_curve, times, temperatures)
-            # Center view on latest value
-            if times:
-                latest_x = times[-1]
-                latest_y = temperatures[-1]
+            for device in devices:
+                times, temperatures = get_temperature_data_in_range(device, start_str, "")
+                if device == 'device01':
+                    self.curve01.setData(times, temperatures)
+                    self.current_times = times
+                    self.current_temps = temperatures
+                elif device == 'device02':
+                    self.curve02.setData(times, temperatures)
+                elif device == 'device03':
+                    self.curve03.setData(times, temperatures)
+                all_times.extend(times)
+                all_temps.extend(temperatures)
+            
+            # Center view on latest value of device01
+            if self.current_times:
+                latest_x = self.current_times[-1]
+                latest_y = self.current_temps[-1]
                 x_width = 3600  # 1 hour width
                 y_height = 10  # temperature range
                 self.plot.setXRange(latest_x - x_width/2, latest_x + x_width/2)
                 self.plot.setYRange(latest_y - y_height/2, latest_y + y_height/2)
-                # Draw trend line from latest to right
+                # Draw trend line from latest to right for device01
                 right_x = latest_x + x_width/2
                 n = self.n_spin.value()
-                slope = calculate_trend_slope(times, temperatures, n)
+                slope = calculate_trend_slope(self.current_times, self.current_temps, n)
                 self.current_slope = slope
                 line_temps = [float(latest_y), float(latest_y) + slope * (right_x - latest_x)]
                 self.line_curve.setData([latest_x, right_x], line_temps)
-                self.trend_label.setText(f"Trend slope: {slope:.4f} °C/s")
-            stats = calculate_stats(temperatures)
+                self.trend_label.setText(f"Trend slope (Device 01): {slope:.4f} °C/s")
+            
+            # Stats for device01
+            stats = calculate_stats(self.current_temps)
             self.update_stats(stats)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Error", f"Failed to fetch data: {str(e)}")
@@ -164,7 +177,7 @@ class TemperatureApp(QtWidgets.QWidget):
             n = self.n_spin.value()
             slope = calculate_trend_slope(self.current_times, self.current_temps, n)
             self.current_slope = slope
-            self.trend_label.setText(f"Trend slope: {slope:.4f} °C/s")
+            self.trend_label.setText(f"Trend slope (Device 01): {slope:.4f} °C/s")
             # Update the trend line
             if self.current_times:
                 latest_x = self.current_times[-1]
