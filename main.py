@@ -10,7 +10,7 @@ import sys
 app = QtWidgets.QApplication(sys.argv)
 win = pg.GraphicsLayoutWidget(show=True, title="Live Graph Example")
 
-plot = win.addPlot(title="Sine Wave")
+plot = win.addPlot(title="Tempre")
 curve = plot.plot(pen='y')
 
 data = np.linspace(0, 2*np.pi, 1000)
@@ -26,4 +26,4 @@ timer = QtCore.QTimer()
 timer.timeout.connect(update)
 timer.start(50)  # update every 50 ms (20 Hz)
 
-sys.exit(app.exec_())
+sys.exit(app.exec())
